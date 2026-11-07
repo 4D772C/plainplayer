@@ -4,8 +4,8 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-val appVersionName = "1.4.0"
-val appVersionCode = 5
+val appVersionName = "0.2.0"
+val appVersionCode = 2
 
 // APK file name: PlainPlayer-<version>-<buildType>.apk, e.g. PlainPlayer-1.1.0-debug.apk
 base {
