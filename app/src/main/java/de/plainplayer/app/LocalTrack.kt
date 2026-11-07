@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import java.io.File
+import java.text.Normalizer
 import java.util.Locale
 
 const val UNKNOWN_ARTIST = "Unknown artist"
@@ -106,4 +107,64 @@ fun formatTime(ms: Long): String {
     val total = (ms.coerceAtLeast(0L) / 1000L).toInt()
     return if (total >= 3600) String.format(Locale.ROOT, "%d:%02d:%02d", total / 3600, (total / 60) % 60, total % 60)
     else String.format(Locale.ROOT, "%d:%02d", total / 60, total % 60)
+}
+
+// ---- Audiobooks -------------------------------------------------------------------------------
+
+/** Folder names (anywhere in the path, any case) whose contents are treated as audiobooks. */
+private val AudiobookFolderNames = setOf("audiobooks", "audiobook", "audio books", "hörbücher", "hörbuch", "hoerbuecher", "hoerbuch")
+
+private fun normalizedFolderName(name: String): String =
+    Normalizer.normalize(name.trim(), Normalizer.Form.NFC).lowercase(Locale.ROOT)
+
+/**
+ * Book key for a track inside an audiobook folder, null for music. One book = one folder below
+ * "Audiobooks"/"Hörbücher" (any depth, e.g. "Hörbücher/Author/Title"); disc folders (CD1, CD2) belong
+ * to their book. Files lying directly in the audiobook folder are books of their own.
+ */
+fun audiobookKeyOf(trackKey: String): String? {
+    val folder = trackKey.substringBeforeLast('/', "")
+    if (folder.isEmpty()) return null
+    val segments = folder.split('/')
+    val root = segments.indexOfFirst { normalizedFolderName(it) in AudiobookFolderNames }
+    if (root < 0) return null
+    val bookFolder = albumFolder(folder)
+    return if (bookFolder.count { it == '/' } <= root) trackKey else bookFolder
+}
+
+data class Audiobook(
+    val key: String,
+    val title: String,
+    val author: String,
+    /** In file order (natural sort of the path: "2 …" before "10 …", CD1 before CD2). */
+    val tracks: List<LocalTrack>,
+    val coverPath: String?,
+    val durationMs: Long,
+)
+
+/** Compares strings with numbers by value: "Part 2" < "Part 10". Case-insensitive. */
+val NaturalOrder: Comparator<String> = Comparator { a, b -> compareNatural(a, b) }
+
+private fun compareNatural(a: String, b: String): Int {
+    var i = 0
+    var j = 0
+    while (i < a.length && j < b.length) {
+        if (a[i].isDigit() && b[j].isDigit()) {
+            val startA = i
+            while (i < a.length && a[i].isDigit()) i++
+            val startB = j
+            while (j < b.length && b[j].isDigit()) j++
+            val numA = a.substring(startA, i).trimStart('0')
+            val numB = b.substring(startB, j).trimStart('0')
+            if (numA.length != numB.length) return numA.length - numB.length
+            val c = numA.compareTo(numB)
+            if (c != 0) return c
+        } else {
+            val c = a[i].lowercaseChar().compareTo(b[j].lowercaseChar())
+            if (c != 0) return c
+            i++
+            j++
+        }
+    }
+    return (a.length - i) - (b.length - j)
 }

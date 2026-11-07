@@ -1,5 +1,14 @@
 # PlainPlayer – Changes
 
+## 1.4.0 – Audiobooks & sleep timer
+- **Audiobook folders:** everything inside a folder named `Audiobooks`, `Audiobook`, `Hörbücher`, `Hörbuch` (any case, anywhere in the path) is treated as audiobooks. One subfolder = one book (`Hörbücher/Title/` or `Hörbücher/Author/Title/`); `CD1`/`CD2` subfolders belong to their book; single files directly in the folder are books of their own. Books don't appear in Albums or Songs.
+- **Books tab** with cover, author, "Part 3 of 12 · 4:12:30 left" / "Finished". Book view with CONTINUE/START and the part list; tapping a part plays from there.
+- **Progress per book:** saved while listening (track + position), independent of the music queue. Continuing starts 5 s earlier. Parts are ordered by file path with natural number sorting (`2` before `10`, `CD1` before `CD2`).
+- **Book controls** while a book plays: speed (0.8–2×, tap to cycle; remembered for all books, music always 1×), back/forward 30 s (crosses into the previous/next part), next part. Shuffle and repeat-all are switched off when a book starts.
+- **Sleep timer** (moon icon in the header, for music too): 15/30/45/60 minutes or "end of track/chapter". Runs in the playback service, so it works with the app closed; the header shows the time it will pause.
+- New files: `BookProgressStore.kt`. Changed: `LocalTrack.kt`, `PlaybackService.kt`, `PlayerViewModel.kt`, `PlayerScreen.kt`.
+
+
 ## 1.3.0 – Large libraries
 - **Scan reads 4 files in parallel** (SAF reads mostly wait on the storage provider). Only the first changed track of an album reads its embedded cover.
 - **Scan checkpoints:** every 250 newly read files are saved to the library database. If the app is closed or killed mid-scan, the next refresh only reads what is still missing. Incremental refreshes now compare against the database, so checkpoints are used within the same session too.

@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.DocumentsContract
@@ -19,6 +20,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
+import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CancellationException
@@ -30,7 +32,7 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-enum class LibraryTab(val label: String) { Albums("Albums"), Songs("Songs"), Playlists("Playlists") }
+enum class LibraryTab(val label: String) { Albums("Albums"), Songs("Songs"), Playlists("Playlists"), Books("Books") }
 
 data class UiMessage(val text: String, val actionLabel: String? = null, val action: (() -> Unit)? = null)
 
@@ -38,8 +40,12 @@ data class NowPlaying(val title: String, val artist: String, val album: String, 
 
 /** Immutable, pre-computed view of the library. Built off the main thread. */
 private class Library(
+    /** Music only (audiobook tracks are in [books]). */
     val tracks: List<LocalTrack>,
     val albums: List<MusicAlbum>,
+    val books: List<Audiobook>,
+    /** Everything, for playlists and key repair. */
+    val allTracks: List<LocalTrack>,
     val byKey: Map<String, LocalTrack>,
     val byDocumentId: Map<String, LocalTrack>,
     val covers: Map<String, String?>,
@@ -50,14 +56,15 @@ private class Library(
             val documentId = runCatching { DocumentsContract.getDocumentId(Uri.parse(old)) }.getOrNull() ?: return null
             return byDocumentId[documentId]?.key
         }
-        return tracks.filter { it.key.endsWith("/$old") || old.endsWith("/${it.key}") }.singleOrNull()?.key
+        return allTracks.filter { it.key.endsWith("/$old") || old.endsWith("/${it.key}") }.singleOrNull()?.key
     }
 
     companion object {
         val EMPTY = build(LibrarySnapshot.EMPTY)
 
         fun build(snapshot: LibrarySnapshot): Library {
-            val tracks = snapshot.tracks.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.title })
+            val (bookTracks, music) = snapshot.tracks.partition { audiobookKeyOf(it.key) != null }
+            val tracks = music.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.title })
             val albums = tracks.groupBy { it.albumKey }.map { (key, albumTracks) ->
                 val sorted = albumTracks.sortedWith(AlbumTrackOrder)
                 val first = sorted.first()
@@ -73,11 +80,33 @@ private class Library(
                 compareBy<MusicAlbum, String>(String.CASE_INSENSITIVE_ORDER) { it.artist }
                     .thenBy(String.CASE_INSENSITIVE_ORDER) { it.title }
             )
+            val books = bookTracks.groupBy { audiobookKeyOf(it.key)!! }.map { (key, parts) ->
+                val ordered = parts.sortedWith(compareBy(NaturalOrder) { it.key })
+                val folderName = key.substringAfterLast('/')
+                val parentName = key.substringBeforeLast('/', "").substringAfterLast('/')
+                val tagged = albumDisplayArtist(ordered)
+                Audiobook(
+                    key = key,
+                    // A loose file is its own book: use its name without extension.
+                    title = if (parts.size == 1 && parts[0].key == key) folderName.substringBeforeLast('.') else folderName,
+                    author = when {
+                        tagged != UNKNOWN_ARTIST && tagged != "Various artists" -> tagged
+                        audiobookKeyOf("$parentName/x") == null && key.count { it == '/' } >= 2 -> parentName
+                        else -> ""
+                    },
+                    tracks = ordered,
+                    coverPath = ordered.firstNotNullOfOrNull { snapshot.covers[it.albumKey] },
+                    durationMs = ordered.sumOf { it.durationMs },
+                )
+            }.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.title })
+            val all = snapshot.tracks
             return Library(
                 tracks = tracks,
                 albums = albums,
-                byKey = tracks.associateBy { it.key },
-                byDocumentId = tracks.associateBy { it.documentId },
+                books = books,
+                allTracks = all,
+                byKey = all.associateBy { it.key },
+                byDocumentId = all.associateBy { it.documentId },
                 covers = snapshot.covers,
             )
         }
@@ -111,6 +140,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         private set
     var playlists by mutableStateOf<List<UserPlaylist>>(emptyList())
         private set
+    var books by mutableStateOf<List<Audiobook>>(emptyList())
+        private set
     var libraryLoaded by mutableStateOf(false)
         private set
     var selectedFolder by mutableStateOf(prefs.getString(KEY_TREE, null))
@@ -129,10 +160,15 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         private set
     val selectedAlbum: MusicAlbum? get() = selectedAlbumKey?.let { key -> albums.firstOrNull { it.key == key } }
     val selectedPlaylist: UserPlaylist? get() = selectedPlaylistId?.let { id -> playlists.firstOrNull { it.id == id } }
+    var selectedBookKey by mutableStateOf<String?>(null)
+        private set
+    val selectedBook: Audiobook? get() = selectedBookKey?.let { key -> books.firstOrNull { it.key == key } }
 
-    fun openAlbum(key: String) { selectedPlaylistId = null; selectedAlbumKey = key }
-    fun openPlaylist(id: Long) { selectedAlbumKey = null; selectedPlaylistId = id }
-    fun closeDetail() { selectedAlbumKey = null; selectedPlaylistId = null }
+    fun openAlbum(key: String) { closeDetail(); selectedAlbumKey = key }
+    fun openPlaylist(id: Long) { closeDetail(); selectedPlaylistId = id }
+    fun openBook(key: String) { closeDetail(); selectedBookKey = key }
+    fun closeDetail() { selectedAlbumKey = null; selectedPlaylistId = null; selectedBookKey = null }
+    val hasDetailOpen: Boolean get() = selectedAlbumKey != null || selectedPlaylistId != null || selectedBookKey != null
 
     fun resolve(trackKey: String): LocalTrack? = library.byKey[trackKey]
 
@@ -155,6 +191,25 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     var repeatMode by mutableIntStateOf(Player.REPEAT_MODE_OFF)
         private set
 
+    // ---- Audiobooks / sleep timer ---------------------------------------------------------------
+    private val bookStore = BookProgressStore(application)
+    var bookProgress by mutableStateOf<Map<String, BookProgress>>(emptyMap())
+        private set
+    var bookSpeed by mutableStateOf(bookStore.speed)
+        private set
+    /** Book of the current track, or null when music is playing. */
+    val currentBookKey: String? get() = currentKey?.let { audiobookKeyOf(it) }
+    /** Wall-clock time (ms) when the sleep timer pauses playback; 0 = no timed sleep. */
+    var sleepAt by mutableLongStateOf(0L)
+        private set
+    var sleepAtEndOfTrack by mutableStateOf(false)
+        private set
+    // Held as a field: SharedPreferences keeps listeners only weakly.
+    private val bookPrefsListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+        bookProgress = bookStore.all()
+        bookSpeed = bookStore.speed
+    }
+
     private val playerListener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) = readPlayerState()
 
@@ -165,6 +220,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     init {
+        bookProgress = bookStore.all()
+        bookStore.addListener(bookPrefsListener)
         connectController()
         loadLibrary()
     }
@@ -187,6 +244,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         library = built
         tracks = built.tracks
         albums = built.albums
+        books = built.books
     }
 
     fun chooseFolder(uri: Uri) {
@@ -289,7 +347,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun connectController() {
         val token = SessionToken(app, ComponentName(app, PlaybackService::class.java))
-        val future = MediaController.Builder(app, token).buildAsync()
+        val future = MediaController.Builder(app, token)
+            .setListener(object : MediaController.Listener {
+                override fun onExtrasChanged(controller: MediaController, extras: Bundle) = readSleepState(extras)
+            })
+            .buildAsync()
         controllerFuture = future
         future.addListener({
             if (future.isCancelled) return@addListener
@@ -303,6 +365,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             connected.addListener(playerListener)
             // Deliberately no queue changes here: whatever is playing keeps playing.
             readPlayerState()
+            readSleepState(connected.sessionExtras)
         }, ContextCompat.getMainExecutor(app))
     }
 
@@ -325,17 +388,22 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         repeatMode = c.repeatMode
     }
 
+    private fun readSleepState(extras: Bundle) {
+        sleepAt = extras.getLong(SleepTimer.EXTRA_SLEEP_AT, 0L)
+        sleepAtEndOfTrack = extras.getBoolean(SleepTimer.EXTRA_END_OF_TRACK, false)
+    }
+
     fun positionMs(): Long = controller?.currentPosition?.coerceAtLeast(0L) ?: 0L
 
     /** Plays [queue] from [startIndex]. The queue is only replaced when it actually differs. */
-    private fun play(queue: List<LocalTrack>, startIndex: Int) {
+    private fun play(queue: List<LocalTrack>, startIndex: Int, startPositionMs: Long = 0L) {
         val c = controller ?: run { post("Player is not ready yet."); return }
         if (queue.isEmpty()) return
         val index = startIndex.coerceIn(0, queue.lastIndex)
         val sameQueue = c.mediaItemCount == queue.size &&
             queue.indices.all { c.getMediaItemAt(it).mediaId == queue[it].key }
-        if (sameQueue) c.seekToDefaultPosition(index)
-        else c.setMediaItems(queue.map { it.toMediaItem(library.covers[it.albumKey]) }, index, 0L)
+        if (sameQueue) c.seekTo(index, startPositionMs)
+        else c.setMediaItems(queue.map { it.toMediaItem(library.covers[it.albumKey]) }, index, startPositionMs)
         c.prepare()
         c.play()
     }
@@ -381,6 +449,86 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                 else -> Player.REPEAT_MODE_OFF
             }
         }
+    }
+
+    // ---- Audiobooks ----------------------------------------------------------------------------
+
+    /**
+     * Continues [book] where it was left (a few seconds earlier, for context), or plays it from
+     * [startTrack]. A finished or new book starts at the beginning.
+     */
+    fun playBook(book: Audiobook, startTrack: LocalTrack? = null) {
+        val c = controller ?: run { post("Player is not ready yet."); return }
+        if (book.tracks.isEmpty()) return
+        // Books are listened to in order.
+        c.shuffleModeEnabled = false
+        if (c.repeatMode == Player.REPEAT_MODE_ALL) c.repeatMode = Player.REPEAT_MODE_OFF
+        if (startTrack == null && currentBookKey == book.key && c.playbackState != Player.STATE_ENDED) {
+            // Already loaded (e.g. paused): just continue.
+            if (c.playbackState == Player.STATE_IDLE) c.prepare()
+            c.play()
+            return
+        }
+        val progress = bookProgress[book.key]
+        val (index, position) = when {
+            startTrack != null -> book.tracks.indexOfFirst { it.key == startTrack.key }.coerceAtLeast(0) to 0L
+            progress != null && !progress.finished && progress.trackKey != null -> {
+                val i = book.tracks.indexOfFirst { it.key == progress.trackKey }
+                if (i >= 0) i to (progress.positionMs - RESUME_REWIND_MS).coerceAtLeast(0L) else 0 to 0L
+            }
+            else -> 0 to 0L
+        }
+        play(book.tracks, index, position)
+    }
+
+    /** Jumps by [deltaMs] (e.g. ±30 s), continuing into the previous/next part when needed. */
+    fun skipBy(deltaMs: Long) {
+        val c = controller ?: return
+        val target = c.currentPosition + deltaMs
+        val duration = c.duration
+        when {
+            target < 0 && c.hasPreviousMediaItem() -> {
+                val previous = c.previousMediaItemIndex
+                val previousDuration = library.byKey[c.getMediaItemAt(previous).mediaId]?.durationMs ?: 0L
+                c.seekTo(previous, (previousDuration + target).coerceAtLeast(0L))
+            }
+            duration > 0 && target >= duration && c.hasNextMediaItem() ->
+                c.seekTo(c.nextMediaItemIndex, (target - duration).coerceAtLeast(0L))
+            else -> c.seekTo(target.coerceIn(0L, if (duration > 0) duration else Long.MAX_VALUE))
+        }
+    }
+
+    fun cycleSpeed() {
+        val speeds = BookProgressStore.SPEEDS
+        val next = speeds[(speeds.indexOfFirst { it >= bookSpeed - 0.001f } + 1).let { if (it in speeds.indices) it else 0 }]
+        bookStore.speed = next
+        bookSpeed = next
+        if (currentBookKey != null) controller?.setPlaybackSpeed(next)
+    }
+
+    /** Remaining listening time and part number for the book list, from the saved progress. */
+    fun bookStatus(book: Audiobook): String {
+        val p = bookProgress[book.key]
+        val index = p?.trackKey?.let { key -> book.tracks.indexOfFirst { it.key == key } } ?: -1
+        return when {
+            p?.finished == true -> "Finished"
+            index < 0 -> if (book.tracks.size > 1) "${book.tracks.size} parts · ${formatTime(book.durationMs)}" else formatTime(book.durationMs)
+            else -> {
+                val left = book.tracks.drop(index).sumOf { it.durationMs } - p!!.positionMs
+                "Part ${index + 1} of ${book.tracks.size} · ${formatTime(left.coerceAtLeast(0L))} left"
+            }
+        }
+    }
+
+    // ---- Sleep timer ---------------------------------------------------------------------------
+
+    /** [minutes] > 0, 0 = off, [SleepTimer.END_OF_TRACK] = at the end of the current track/chapter. */
+    fun setSleepTimer(minutes: Int) {
+        val c = controller ?: return
+        c.sendCustomCommand(
+            SessionCommand(SleepTimer.ACTION, Bundle.EMPTY),
+            Bundle().apply { putInt(SleepTimer.EXTRA_MINUTES, minutes) },
+        )
     }
 
     // ---- Playlists -----------------------------------------------------------------------------
@@ -446,6 +594,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     override fun onCleared() {
+        bookStore.removeListener(bookPrefsListener)
         controller?.removeListener(playerListener)
         controllerFuture?.let { MediaController.releaseFuture(it) }
         controller = null
@@ -455,5 +604,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
     private companion object {
         const val KEY_TREE = "music_tree"
+        /** When continuing a book, start a little earlier to pick up the thread. */
+        const val RESUME_REWIND_MS = 5_000L
     }
 }

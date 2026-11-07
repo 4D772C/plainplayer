@@ -15,6 +15,8 @@ A small, local-first Android music player for MP3 and FLAC. Kotlin + Jetpack Com
 - Background playback through `MediaSessionService`, with previous/next, seek, shuffle and repeat. Pauses for calls and other audio (audio focus) and when headphones are unplugged. Unplayable files are skipped.
 - Opening or rotating the app never changes what is currently playing.
 - Remembers where you left off: queue, track, position, shuffle and repeat are saved while playing and restored (paused) when the app starts again — also after the app was closed or the phone restarted. The system media controls and a Bluetooth/headset play button can resume the last session directly.
+- Audiobooks: put them in a folder named `Audiobooks` or `Hörbücher` inside the music folder, one subfolder per book. They get their own Books tab, remember their position per book, and play with adjustable speed and ±30 s skip.
+- Sleep timer (15–60 min or end of track/chapter), running in the playback service.
 - No internet permission, analytics, ads, account or cloud service.
 
 ## Build on Arch Linux
