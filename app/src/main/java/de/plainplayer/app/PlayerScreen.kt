@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -27,6 +28,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Bedtime
+import androidx.compose.material.icons.filled.Forward30
+import androidx.compose.material.icons.filled.Replay30
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Pause
@@ -100,18 +104,20 @@ fun PlayerScreen(vm: PlayerViewModel, onPickFolder: () -> Unit) {
     }
 
     // System back closes an open album/playlist instead of leaving the app.
-    BackHandler(enabled = vm.selectedAlbumKey != null || vm.selectedPlaylistId != null) { vm.closeDetail() }
+    BackHandler(enabled = vm.hasDetailOpen) { vm.closeDetail() }
 
     var tracksToAdd by remember { mutableStateOf<List<LocalTrack>>(emptyList()) }
     var createWithKeys by remember { mutableStateOf<List<String>?>(null) } // null = dialog hidden
     var playlistToDelete by remember { mutableStateOf<UserPlaylist?>(null) }
+    var showSleepDialog by remember { mutableStateOf(false) }
 
     val album = vm.selectedAlbum
     val playlist = vm.selectedPlaylist
+    val book = vm.selectedBook
 
     Scaffold(containerColor = Ink, snackbarHost = { SnackbarHost(snackbarHost) }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp)) {
-            Header(vm, onPickFolder)
+            Header(vm, onPickFolder, onSleep = { showSleepDialog = true })
             NowPlayingPanel(vm.nowPlaying)
             Spacer(Modifier.height(10.dp))
             PositionBar(vm)
@@ -130,6 +136,11 @@ fun PlayerScreen(vm: PlayerViewModel, onPickFolder: () -> Unit) {
                         Text(playlist.name, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                         IconButton(onClick = { playlistToDelete = playlist }) { Icon(Icons.Default.Delete, contentDescription = "Delete playlist", tint = Muted) }
                     }
+                    book != null -> {
+                        BackButton("Back to books") { vm.closeDetail() }
+                        Text(book.title, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                        Text(formatTime(book.durationMs), color = Muted, fontSize = 10.sp)
+                    }
                     else -> {
                         Text("LIBRARY", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.8.sp, modifier = Modifier.weight(1f))
                         Text("${vm.tracks.size} TRACKS · ${vm.albums.size} ALBUMS", color = Muted, fontSize = 9.sp)
@@ -142,8 +153,9 @@ fun PlayerScreen(vm: PlayerViewModel, onPickFolder: () -> Unit) {
                 !vm.libraryLoaded -> Box(fill.fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Acid) }
                 album != null -> AlbumDetail(vm, album, onAdd = { tracksToAdd = it }, modifier = fill)
                 playlist != null -> PlaylistDetail(vm, playlist, modifier = fill)
+                book != null -> BookDetail(vm, book, modifier = fill)
                 else -> Column(fill) {
-                    Row(Modifier.fillMaxWidth().padding(bottom = 7.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 7.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         LibraryTab.entries.forEach { tab ->
                             val chosen = vm.libraryTab == tab
                             Text(
@@ -155,6 +167,7 @@ fun PlayerScreen(vm: PlayerViewModel, onPickFolder: () -> Unit) {
                     val listModifier = Modifier.weight(1f)
                     when {
                         vm.libraryTab == LibraryTab.Playlists -> PlaylistList(vm, onCreate = { createWithKeys = emptyList() }, modifier = listModifier)
+                        vm.libraryTab == LibraryTab.Books -> BookList(vm, listModifier)
                         vm.tracks.isEmpty() -> EmptyLibrary(vm, onPickFolder, listModifier)
                         vm.libraryTab == LibraryTab.Albums -> AlbumList(vm, listModifier)
                         else -> SongList(vm, onAdd = { tracksToAdd = it }, modifier = listModifier)
@@ -181,6 +194,7 @@ fun PlayerScreen(vm: PlayerViewModel, onPickFolder: () -> Unit) {
             }
         })
     }
+    if (showSleepDialog) SleepTimerDialog(vm, onDismiss = { showSleepDialog = false })
     playlistToDelete?.let { pl ->
         AlertDialog(
             onDismissRequest = { playlistToDelete = null },
@@ -193,7 +207,7 @@ fun PlayerScreen(vm: PlayerViewModel, onPickFolder: () -> Unit) {
 }
 
 @Composable
-private fun Header(vm: PlayerViewModel, onPickFolder: () -> Unit) {
+private fun Header(vm: PlayerViewModel, onPickFolder: () -> Unit, onSleep: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(top = 18.dp, bottom = if (vm.scanning) 6.dp else 16.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text("PLAINPLAYER", color = Acid, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.5.sp)
@@ -202,6 +216,16 @@ private fun Header(vm: PlayerViewModel, onPickFolder: () -> Unit) {
         IconButton(onClick = { if (vm.selectedFolder == null) onPickFolder() else vm.refresh() }, enabled = !vm.scanning) {
             if (vm.scanning) CircularProgressIndicator(Modifier.size(20.dp), color = Acid, strokeWidth = 2.dp)
             else Icon(Icons.Default.Refresh, contentDescription = "Refresh library", tint = Acid)
+        }
+        val sleeping = vm.sleepAt > 0L || vm.sleepAtEndOfTrack
+        if (sleeping) {
+            Text(
+                if (vm.sleepAtEndOfTrack) "END" else clockTime(vm.sleepAt),
+                color = Acid, fontSize = 10.sp, modifier = Modifier.clickable(onClick = onSleep)
+            )
+        }
+        IconButton(onClick = onSleep) {
+            Icon(Icons.Default.Bedtime, contentDescription = if (sleeping) "Sleep timer on" else "Sleep timer", tint = if (sleeping) Acid else Muted)
         }
         IconButton(onClick = onPickFolder) { Icon(Icons.Default.FolderOpen, contentDescription = "Choose music folder", tint = Acid) }
     }
@@ -270,6 +294,10 @@ private fun PositionBar(vm: PlayerViewModel) {
 
 @Composable
 private fun Controls(vm: PlayerViewModel) {
+    if (vm.currentBookKey != null) {
+        BookControls(vm)
+        return
+    }
     Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = { vm.toggleShuffle() }) {
             Icon(Icons.Default.Shuffle, contentDescription = if (vm.shuffle) "Shuffle on" else "Shuffle off", tint = if (vm.shuffle) Acid else Muted)
@@ -526,6 +554,124 @@ private fun CreatePlaylistDialog(vm: PlayerViewModel, trackKeys: List<String>, o
         dismissButton = { TextButton(onClick = { onDone(false) }) { Text("CANCEL") } },
     )
 }
+
+/** Audiobook mode: speed, ±30 s, play/pause, next part. */
+@Composable
+private fun BookControls(vm: PlayerViewModel) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+        TextButton(onClick = { vm.cycleSpeed() }, modifier = Modifier.width(64.dp)) {
+            Text(speedLabel(vm.bookSpeed), color = if (vm.bookSpeed != 1f) Acid else Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        }
+        IconButton(onClick = { vm.skipBy(-30_000L) }, modifier = Modifier.size(48.dp)) {
+            Icon(Icons.Default.Replay30, contentDescription = "Back 30 seconds", tint = Color.White, modifier = Modifier.size(32.dp))
+        }
+        IconButton(onClick = { vm.togglePlayPause() }, modifier = Modifier.size(58.dp).clip(CircleShape).background(Acid)) {
+            Icon(if (vm.showPause) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = if (vm.showPause) "Pause" else "Play", tint = Ink, modifier = Modifier.size(34.dp))
+        }
+        IconButton(onClick = { vm.skipBy(30_000L) }, modifier = Modifier.size(48.dp)) {
+            Icon(Icons.Default.Forward30, contentDescription = "Forward 30 seconds", tint = Color.White, modifier = Modifier.size(32.dp))
+        }
+        IconButton(onClick = { vm.next() }) {
+            Icon(Icons.Default.SkipNext, contentDescription = "Next part", tint = Muted)
+        }
+    }
+}
+
+@Composable
+private fun BookList(vm: PlayerViewModel, modifier: Modifier) {
+    if (vm.books.isEmpty()) {
+        Box(modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
+            Text(
+                "No audiobooks yet. Put them in a folder named “Audiobooks” or “Hörbücher” inside your music folder – one subfolder per book – and refresh.",
+                color = Muted, fontSize = 12.sp
+            )
+        }
+        return
+    }
+    LazyColumn(modifier, contentPadding = PaddingValues(bottom = 14.dp)) {
+        items(vm.books, key = { it.key }) { book ->
+            val playingThis = vm.currentBookKey == book.key
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(if (playingThis) Panel else Color.Transparent).clickable { vm.openBook(book.key) }.padding(vertical = 7.dp, horizontal = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                Artwork(book.coverPath, Modifier.size(54.dp))
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(book.title, color = if (playingThis) Acid else Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (book.author.isNotEmpty()) Text(book.author, color = Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(vm.bookStatus(book), color = Muted.copy(alpha = .8f), fontSize = 10.sp, maxLines = 1)
+                }
+                IconButton(onClick = { vm.playBook(book) }) { Icon(Icons.Default.PlayArrow, contentDescription = "Continue", tint = Acid) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BookDetail(vm: PlayerViewModel, book: Audiobook, modifier: Modifier) {
+    val progress = vm.bookProgress[book.key]
+    val currentPart = progress?.takeIf { !it.finished }?.trackKey
+    LazyColumn(modifier, contentPadding = PaddingValues(bottom = 14.dp)) {
+        item {
+            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Artwork(book.coverPath, Modifier.size(68.dp))
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    if (book.author.isNotEmpty()) Text(book.author, color = Muted, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(vm.bookStatus(book), color = Muted, fontSize = 11.sp)
+                }
+                TextButton(onClick = { vm.playBook(book) }) {
+                    Text(if (currentPart != null) "CONTINUE" else "START", color = Acid, fontSize = 10.sp)
+                }
+            }
+        }
+        itemsIndexed(book.tracks, key = { _, track -> track.key }) { index, track ->
+            val label = if (track.key == currentPart && vm.currentKey != track.key) "▸" else numberLabel(index + 1)
+            // Show the CD folder for books split into CD1/CD2…, nothing otherwise.
+            val subfolder = if (track.folder != book.key) track.folder.substringAfterLast('/') else ""
+            TrackRow(label, track.title, subfolder, track.durationMs, track.key == vm.currentKey, vm.isPlaying) {
+                vm.playBook(book, track)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SleepTimerDialog(vm: PlayerViewModel, onDismiss: () -> Unit) {
+    val options = listOf(15, 30, 45, 60)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Sleep timer") },
+        text = {
+            Column {
+                Text(
+                    when {
+                        vm.sleepAtEndOfTrack -> "Pauses at the end of the current track."
+                        vm.sleepAt > 0L -> "Pauses at ${clockTime(vm.sleepAt)}."
+                        else -> "Pause playback after:"
+                    },
+                    color = Muted, fontSize = 12.sp, modifier = Modifier.padding(bottom = 6.dp)
+                )
+                options.forEach { minutes ->
+                    TextButton(onClick = { vm.setSleepTimer(minutes); onDismiss() }) { Text("$minutes minutes") }
+                }
+                TextButton(onClick = { vm.setSleepTimer(SleepTimer.END_OF_TRACK); onDismiss() }) {
+                    Text(if (vm.currentBookKey != null) "End of chapter" else "End of track")
+                }
+            }
+        },
+        confirmButton = {
+            if (vm.sleepAt > 0L || vm.sleepAtEndOfTrack) {
+                TextButton(onClick = { vm.setSleepTimer(0); onDismiss() }) { Text("TURN OFF") }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("CLOSE") } },
+    )
+}
+
+private fun clockTime(epochMs: Long): String =
+    java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(epochMs))
+
+private fun speedLabel(speed: Float): String =
+    (if (speed % 1f == 0f) String.format(Locale.ROOT, "%.0f", speed) else String.format(Locale.ROOT, "%.2f", speed).trimEnd('0')) + "×"
 
 /** Cover image from the app's cover cache, decoded off the main thread at thumbnail size. */
 @Composable
