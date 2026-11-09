@@ -8,6 +8,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -71,6 +73,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -115,66 +118,41 @@ fun PlayerScreen(vm: PlayerViewModel, onPickFolder: () -> Unit) {
     val playlist = vm.selectedPlaylist
     val book = vm.selectedBook
 
+    // Phones in landscape (or very short screens): player and library side by side, so the library
+    // list keeps enough room. Short portrait screens get a smaller now-playing panel.
+    val configuration = LocalConfiguration.current
+    val landscape = configuration.screenWidthDp > configuration.screenHeightDp && configuration.screenHeightDp < 600
+    val compact = configuration.screenHeightDp < 640
+
     Scaffold(containerColor = Ink, snackbarHost = { SnackbarHost(snackbarHost) }) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp)) {
-            Header(vm, onPickFolder, onSleep = { showSleepDialog = true })
-            NowPlayingPanel(vm.nowPlaying)
-            Spacer(Modifier.height(10.dp))
-            PositionBar(vm)
-            Controls(vm)
-
-            // Title row
-            Row(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                when {
-                    album != null -> {
-                        BackButton("Back to albums") { vm.closeDetail() }
-                        Text(album.title, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                        Text(trackCount(album.tracks.size).uppercase(Locale.ROOT), color = Muted, fontSize = 10.sp)
-                    }
-                    playlist != null -> {
-                        BackButton("Back to playlists") { vm.closeDetail() }
-                        Text(playlist.name, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                        IconButton(onClick = { playlistToDelete = playlist }) { Icon(Icons.Default.Delete, contentDescription = "Delete playlist", tint = Muted) }
-                    }
-                    book != null -> {
-                        BackButton("Back to books") { vm.closeDetail() }
-                        Text(book.title, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                        Text(formatTime(book.durationMs), color = Muted, fontSize = 10.sp)
-                    }
-                    else -> {
-                        Text("LIBRARY", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.8.sp, modifier = Modifier.weight(1f))
-                        Text("${vm.tracks.size} TRACKS · ${vm.albums.size} ALBUMS", color = Muted, fontSize = 9.sp)
-                    }
+        val library: @Composable ColumnScope.() -> Unit = {
+            LibrarySection(
+                vm = vm,
+                album = album,
+                playlist = playlist,
+                book = book,
+                onPickFolder = onPickFolder,
+                onAdd = { tracksToAdd = it },
+                onCreatePlaylist = { createWithKeys = emptyList() },
+                onDeletePlaylist = { playlistToDelete = it },
+            )
+        }
+        if (landscape) {
+            Row(Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp)) {
+                Column(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState())) {
+                    PlayerSection(vm, onPickFolder, onSleep = { showSleepDialog = true }, compact = true)
+                }
+                Spacer(Modifier.width(20.dp))
+                Column(Modifier.weight(1.3f).fillMaxHeight().padding(top = 12.dp)) { library() }
+            }
+        } else {
+            Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp)) {
+                PlayerSection(vm, onPickFolder, onSleep = { showSleepDialog = true }, compact = compact)
+                library()
+                if (!compact) {
+                    Text("OFFLINE BY DESIGN  ·  NO ADS  ·  NO TRACKING", color = Muted.copy(alpha = .65f), fontSize = 9.sp, letterSpacing = 1.1.sp, modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 10.dp, top = 4.dp))
                 }
             }
-
-            val fill = Modifier.weight(1f)
-            when {
-                !vm.libraryLoaded -> Box(fill.fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Acid) }
-                album != null -> AlbumDetail(vm, album, onAdd = { tracksToAdd = it }, modifier = fill)
-                playlist != null -> PlaylistDetail(vm, playlist, modifier = fill)
-                book != null -> BookDetail(vm, book, modifier = fill)
-                else -> Column(fill) {
-                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 7.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        LibraryTab.entries.forEach { tab ->
-                            val chosen = vm.libraryTab == tab
-                            Text(
-                                tab.label.uppercase(Locale.ROOT), color = if (chosen) Ink else Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp,
-                                modifier = Modifier.clip(RoundedCornerShape(20.dp)).background(if (chosen) Acid else Panel).clickable { vm.libraryTab = tab }.padding(horizontal = 15.dp, vertical = 8.dp)
-                            )
-                        }
-                    }
-                    val listModifier = Modifier.weight(1f)
-                    when {
-                        vm.libraryTab == LibraryTab.Playlists -> PlaylistList(vm, onCreate = { createWithKeys = emptyList() }, modifier = listModifier)
-                        vm.libraryTab == LibraryTab.Books -> BookList(vm, listModifier)
-                        vm.tracks.isEmpty() -> EmptyLibrary(vm, onPickFolder, listModifier)
-                        vm.libraryTab == LibraryTab.Albums -> AlbumList(vm, listModifier)
-                        else -> SongList(vm, onAdd = { tracksToAdd = it }, modifier = listModifier)
-                    }
-                }
-            }
-            Text("OFFLINE BY DESIGN  ·  NO ADS  ·  NO TRACKING", color = Muted.copy(alpha = .65f), fontSize = 9.sp, letterSpacing = 1.1.sp, modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 10.dp, top = 4.dp))
         }
     }
 
@@ -207,8 +185,83 @@ fun PlayerScreen(vm: PlayerViewModel, onPickFolder: () -> Unit) {
 }
 
 @Composable
-private fun Header(vm: PlayerViewModel, onPickFolder: () -> Unit, onSleep: () -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(top = 18.dp, bottom = if (vm.scanning) 6.dp else 16.dp), verticalAlignment = Alignment.CenterVertically) {
+private fun PlayerSection(vm: PlayerViewModel, onPickFolder: () -> Unit, onSleep: () -> Unit, compact: Boolean) {
+    Header(vm, onPickFolder, onSleep, compact)
+    NowPlayingPanel(vm.nowPlaying, compact)
+    Spacer(Modifier.height(if (compact) 6.dp else 10.dp))
+    PositionBar(vm)
+    Controls(vm)
+}
+
+@Composable
+private fun ColumnScope.LibrarySection(
+    vm: PlayerViewModel,
+    album: MusicAlbum?,
+    playlist: UserPlaylist?,
+    book: Audiobook?,
+    onPickFolder: () -> Unit,
+    onAdd: (List<LocalTrack>) -> Unit,
+    onCreatePlaylist: () -> Unit,
+    onDeletePlaylist: (UserPlaylist) -> Unit,
+) {
+    // Title row
+    Row(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        when {
+            album != null -> {
+                BackButton("Back to albums") { vm.closeDetail() }
+                Text(album.title, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                Text(trackCount(album.tracks.size).uppercase(Locale.ROOT), color = Muted, fontSize = 10.sp)
+            }
+            playlist != null -> {
+                BackButton("Back to playlists") { vm.closeDetail() }
+                Text(playlist.name, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                IconButton(onClick = { onDeletePlaylist(playlist) }) { Icon(Icons.Default.Delete, contentDescription = "Delete playlist", tint = Muted) }
+            }
+            book != null -> {
+                BackButton("Back to books") { vm.closeDetail() }
+                Text(book.title, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                Text(formatTime(book.durationMs), color = Muted, fontSize = 10.sp)
+            }
+            else -> {
+                Text("LIBRARY", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.8.sp, modifier = Modifier.weight(1f))
+                Text("${vm.tracks.size} TRACKS · ${vm.albums.size} ALBUMS", color = Muted, fontSize = 9.sp)
+            }
+        }
+    }
+
+    val fill = Modifier.weight(1f)
+    when {
+        !vm.libraryLoaded -> Box(fill.fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Acid) }
+        album != null -> AlbumDetail(vm, album, onAdd = onAdd, modifier = fill)
+        playlist != null -> PlaylistDetail(vm, playlist, modifier = fill)
+        book != null -> BookDetail(vm, book, modifier = fill)
+        else -> Column(fill) {
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 7.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                LibraryTab.entries.forEach { tab ->
+                    val chosen = vm.libraryTab == tab
+                    Text(
+                        tab.label.uppercase(Locale.ROOT), color = if (chosen) Ink else Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp,
+                        modifier = Modifier.clip(RoundedCornerShape(20.dp)).background(if (chosen) Acid else Panel).clickable { vm.libraryTab = tab }.padding(horizontal = 15.dp, vertical = 8.dp)
+                    )
+                }
+            }
+            val listModifier = Modifier.weight(1f)
+            when {
+                vm.libraryTab == LibraryTab.Playlists -> PlaylistList(vm, onCreate = onCreatePlaylist, modifier = listModifier)
+                vm.libraryTab == LibraryTab.Books -> BookList(vm, listModifier)
+                vm.tracks.isEmpty() -> EmptyLibrary(vm, onPickFolder, listModifier)
+                vm.libraryTab == LibraryTab.Albums -> AlbumList(vm, listModifier)
+                else -> SongList(vm, onAdd = onAdd, modifier = listModifier)
+            }
+        }
+    }
+}
+
+@Composable
+private fun Header(vm: PlayerViewModel, onPickFolder: () -> Unit, onSleep: () -> Unit, compact: Boolean) {
+    val top = if (compact) 6.dp else 18.dp
+    val bottom = if (vm.scanning) 6.dp else if (compact) 6.dp else 16.dp
+    Row(Modifier.fillMaxWidth().padding(top = top, bottom = bottom), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text("PLAINPLAYER", color = Acid, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.5.sp)
             Text("LOCAL AUDIO", color = Muted, fontSize = 10.sp, letterSpacing = 1.8.sp)
@@ -239,12 +292,15 @@ private fun Header(vm: PlayerViewModel, onPickFolder: () -> Unit, onSleep: () ->
 }
 
 @Composable
-private fun NowPlayingPanel(np: NowPlaying?) {
-    Row(Modifier.fillMaxWidth().height(190.dp).clip(RoundedCornerShape(16.dp)).background(Panel).padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
-        Artwork(np?.coverPath, Modifier.size(145.dp), large = true)
-        Spacer(Modifier.width(16.dp))
+private fun NowPlayingPanel(np: NowPlaying?, compact: Boolean) {
+    Row(
+        Modifier.fillMaxWidth().height(if (compact) 96.dp else 190.dp).clip(RoundedCornerShape(16.dp)).background(Panel).padding(if (compact) 10.dp else 15.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Artwork(np?.coverPath, Modifier.size(if (compact) 76.dp else 145.dp), large = true)
+        Spacer(Modifier.width(if (compact) 12.dp else 16.dp))
         Column(Modifier.weight(1f)) {
-            Text(np?.title ?: "Nothing playing", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(np?.title ?: "Nothing playing", color = Color.White, fontSize = if (compact) 15.sp else 18.sp, fontWeight = FontWeight.SemiBold, maxLines = if (compact) 1 else 2, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.height(6.dp))
             Text(np?.artist ?: "Select a track from your library", color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.height(4.dp))
@@ -261,7 +317,9 @@ private fun PositionBar(vm: PlayerViewModel) {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val playing = vm.isPlaying
     val current = vm.currentKey
-    LaunchedEffect(playing, current, lifecycle) {
+    // Also re-read after every seek (±30 s, lock screen, slider) – otherwise a paused player shows a stale position.
+    val seeks = vm.positionVersion
+    LaunchedEffect(playing, current, seeks, lifecycle) {
         position = vm.positionMs()
         if (playing) {
             lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -334,6 +392,7 @@ private fun EmptyLibrary(vm: PlayerViewModel, onPickFolder: () -> Unit, modifier
             val text = when {
                 vm.scanning -> "Reading music folder…"
                 vm.selectedFolder == null -> "Choose a music folder to get started."
+                vm.books.isNotEmpty() -> "No music outside the audiobook folder. Your books are in the Books tab."
                 else -> "No MP3 or FLAC files found in this folder."
             }
             Text(text, color = Muted, fontSize = 13.sp)

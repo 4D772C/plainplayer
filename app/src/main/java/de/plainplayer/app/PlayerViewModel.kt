@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.DocumentsContract
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -26,6 +27,7 @@ import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.receiveAsFlow
@@ -83,16 +85,16 @@ private class Library(
             val books = bookTracks.groupBy { audiobookKeyOf(it.key)!! }.map { (key, parts) ->
                 val ordered = parts.sortedWith(compareBy(NaturalOrder) { it.key })
                 val folderName = key.substringAfterLast('/')
-                val parentName = key.substringBeforeLast('/', "").substringAfterLast('/')
+                val isSingleFile = parts.size == 1 && parts[0].key == key
                 val tagged = albumDisplayArtist(ordered)
                 Audiobook(
                     key = key,
                     // A loose file is its own book: use its name without extension.
-                    title = if (parts.size == 1 && parts[0].key == key) folderName.substringBeforeLast('.') else folderName,
+                    title = if (isSingleFile) folderName.substringBeforeLast('.') else folderName,
                     author = when {
                         tagged != UNKNOWN_ARTIST && tagged != "Various artists" -> tagged
-                        audiobookKeyOf("$parentName/x") == null && key.count { it == '/' } >= 2 -> parentName
-                        else -> ""
+                        isSingleFile -> ""
+                        else -> audiobookAuthorFolder(key) ?: ""
                     },
                     tracks = ordered,
                     coverPath = ordered.firstNotNullOfOrNull { snapshot.covers[it.albumKey] },
@@ -190,6 +192,10 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         private set
     var repeatMode by mutableIntStateOf(Player.REPEAT_MODE_OFF)
         private set
+    /** Increases with every seek, so the position display also updates while paused. */
+    var positionVersion by mutableIntStateOf(0)
+        private set
+    private var lastErrorMessageAt = 0L
 
     // ---- Audiobooks / sleep timer ---------------------------------------------------------------
     private val bookStore = BookProgressStore(application)
@@ -211,11 +217,19 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private val playerListener = object : Player.Listener {
-        override fun onEvents(player: Player, events: Player.Events) = readPlayerState()
+        override fun onEvents(player: Player, events: Player.Events) {
+            readPlayerState()
+            if (events.contains(Player.EVENT_POSITION_DISCONTINUITY)) positionVersion++
+        }
 
         override fun onPlayerError(error: PlaybackException) {
-            val title = controller?.currentMediaItem?.mediaMetadata?.title ?: "this track"
-            post("Can't play “$title” (${error.errorCodeName}).")
+            // The service skips unplayable files; one message per burst is enough.
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastErrorMessageAt > ERROR_MESSAGE_INTERVAL_MS) {
+                val title = controller?.currentMediaItem?.mediaMetadata?.title ?: "this track"
+                post("Can't play “$title” (${error.errorCodeName}). Unplayable files are skipped.")
+            }
+            lastErrorMessageAt = now
         }
     }
 
@@ -247,6 +261,19 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         books = built.books
     }
 
+    private var folderSwitchJob: Job? = null
+
+    /**
+     * Switches to a new music folder as one serialized operation:
+     * 1. Access must be stored permanently – otherwise nothing changes (old folder, library and
+     *    playback stay as they are).
+     * 2. A previous switch and the running scan are cancelled and awaited.
+     * 3. The index is cleared *before* the new folder is saved, so even if the app is killed in between,
+     *    folder and index always belong together.
+     * 4. The player queue still points at files of the old folder (same relative paths can exist in
+     *    both), so it is stopped and cleared.
+     * Selecting several folders quickly: only the last one wins.
+     */
     fun chooseFolder(uri: Uri) {
         val resolver = app.contentResolver
         val persisted = try {
@@ -255,17 +282,34 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         } catch (e: SecurityException) {
             false
         }
-        if (!persisted) post("Access to this folder could not be saved. You may need to choose it again after a restart.")
-        // Only one music folder is used: give back grants for previously chosen folders.
-        resolver.persistedUriPermissions.filter { it.uri != uri }.forEach {
-            runCatching { resolver.releasePersistableUriPermission(it.uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+        if (!persisted) {
+            post("Android did not allow permanent access to this folder. Your current music folder is unchanged.")
+            return
         }
-        prefs.edit().putString(KEY_TREE, uri.toString()).apply()
-        selectedFolder = uri.toString()
-        closeDetail()
-        scanJob?.cancel()
-        refresh(full = true)
+        val newFolder = uri.toString()
+        pendingFolder = newFolder
+        val previousSwitch = folderSwitchJob
+        folderSwitchJob = viewModelScope.launch {
+            previousSwitch?.cancelAndJoin()
+            scanJob?.cancelAndJoin()
+            if (pendingFolder != newFolder) return@launch // a newer selection took over
+            withContext(Dispatchers.IO) { runCatching { libraryCache.replace(LibrarySnapshot.EMPTY) } }
+            if (pendingFolder != newFolder) return@launch
+            prefs.edit().putString(KEY_TREE, newFolder).apply()
+            selectedFolder = newFolder
+            // Only one music folder is used: give back the grants of all others.
+            resolver.persistedUriPermissions.filter { it.uri != uri }.forEach {
+                runCatching { resolver.releasePersistableUriPermission(it.uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            }
+            closeDetail()
+            controller?.let { it.stop(); it.clearMediaItems() }
+            applyLibrary(LibrarySnapshot.EMPTY)
+            refresh(full = true)
+        }
     }
+
+    /** Folder of the most recent [chooseFolder] call; used to let only the last selection win. */
+    private var pendingFolder: String? = null
 
     /**
      * Rescans the selected folder. Incremental unless [full]. A folder that can't be read leaves the
@@ -322,7 +366,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         val loaded = withContext(Dispatchers.IO) {
             try {
                 var all = playlistStore.all()
-                if (repair && lib.tracks.isNotEmpty()) {
+                // Never repair against an empty library (e.g. during a full rescan): nothing would match.
+                if (repair && lib.allTracks.isNotEmpty()) {
                     val fixes = all.asSequence()
                         .flatMap { it.entries.asSequence() }
                         .map { it.trackKey }
@@ -363,6 +408,10 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             }
             controller = connected
             connected.addListener(playerListener)
+            // First start with this version: take over the current music shuffle/repeat as the saved choice.
+            if (!prefs.contains(KEY_MUSIC_SHUFFLE) && connected.currentMediaItem?.mediaId?.let { audiobookKeyOf(it) } == null) {
+                saveMusicModes(connected.shuffleModeEnabled, connected.repeatMode)
+            }
             // Deliberately no queue changes here: whatever is playing keeps playing.
             readPlayerState()
             readSleepState(connected.sessionExtras)
@@ -400,8 +449,18 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         val c = controller ?: run { post("Player is not ready yet."); return }
         if (queue.isEmpty()) return
         val index = startIndex.coerceIn(0, queue.lastIndex)
+        // Music gets back the shuffle/repeat it had before a book switched them off.
+        if (audiobookKeyOf(queue[0].key) == null) {
+            c.shuffleModeEnabled = prefs.getBoolean(KEY_MUSIC_SHUFFLE, false)
+            c.repeatMode = prefs.getInt(KEY_MUSIC_REPEAT, Player.REPEAT_MODE_OFF)
+        }
+        // Same paths are not enough: two music folders can contain identical relative paths, so the
+        // file link must match too. (If the controller has no link for an item, the queue is rebuilt.)
         val sameQueue = c.mediaItemCount == queue.size &&
-            queue.indices.all { c.getMediaItemAt(it).mediaId == queue[it].key }
+            queue.indices.all {
+                val item = c.getMediaItemAt(it)
+                item.mediaId == queue[it].key && item.localConfiguration?.uri == queue[it].uri
+            }
         if (sameQueue) c.seekTo(index, startPositionMs)
         else c.setMediaItems(queue.map { it.toMediaItem(library.covers[it.albumKey]) }, index, startPositionMs)
         c.prepare()
@@ -440,15 +499,25 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     fun previous() { controller?.seekToPrevious() }
     fun next() { controller?.seekToNext() }
     fun seekTo(ms: Long) { controller?.seekTo(ms) }
-    fun toggleShuffle() { controller?.let { it.shuffleModeEnabled = !it.shuffleModeEnabled } }
+    fun toggleShuffle() {
+        val c = controller ?: return
+        c.shuffleModeEnabled = !c.shuffleModeEnabled
+        saveMusicModes(c.shuffleModeEnabled, c.repeatMode)
+    }
+
     fun cycleRepeat() {
-        controller?.let {
-            it.repeatMode = when (it.repeatMode) {
-                Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
-                Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
-                else -> Player.REPEAT_MODE_OFF
-            }
+        val c = controller ?: return
+        c.repeatMode = when (c.repeatMode) {
+            Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+            Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+            else -> Player.REPEAT_MODE_OFF
         }
+        saveMusicModes(c.shuffleModeEnabled, c.repeatMode)
+    }
+
+    /** Shuffle and repeat are only offered for music, so the last choice there is remembered for music. */
+    private fun saveMusicModes(shuffle: Boolean, repeat: Int) {
+        prefs.edit().putBoolean(KEY_MUSIC_SHUFFLE, shuffle).putInt(KEY_MUSIC_REPEAT, repeat).apply()
     }
 
     // ---- Audiobooks ----------------------------------------------------------------------------
@@ -462,7 +531,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         if (book.tracks.isEmpty()) return
         // Books are listened to in order.
         c.shuffleModeEnabled = false
-        if (c.repeatMode == Player.REPEAT_MODE_ALL) c.repeatMode = Player.REPEAT_MODE_OFF
+        // No repeat for books: "repeat one" left over from music would loop a single chapter.
+        c.repeatMode = Player.REPEAT_MODE_OFF
         if (startTrack == null && currentBookKey == book.key && c.playbackState != Player.STATE_ENDED) {
             // Already loaded (e.g. paused): just continue.
             if (c.playbackState == Player.STATE_IDLE) c.prepare()
@@ -606,5 +676,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         const val KEY_TREE = "music_tree"
         /** When continuing a book, start a little earlier to pick up the thread. */
         const val RESUME_REWIND_MS = 5_000L
+        const val KEY_MUSIC_SHUFFLE = "music_shuffle"
+        const val KEY_MUSIC_REPEAT = "music_repeat"
+        const val ERROR_MESSAGE_INTERVAL_MS = 10_000L
     }
 }

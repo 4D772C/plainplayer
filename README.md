@@ -40,7 +40,25 @@ Tap the folder icon, choose the folder containing the music, and grant access. T
 
 - The cache stores metadata and small album cover thumbnails, not copies of audio files.
 - FLAC playback uses Android's native decoder on supported devices. Codec support can vary by device and Android build.
-- Upgrading from 1.0: the library cache is rebuilt once on first start (new schema); playlists are migrated automatically.
+- Upgrading from 0.1: the library cache is rebuilt once on first start (new schema); playlists are migrated automatically.
+
+## Versioning
+
+Current version: **0.2.3**. New features raise the middle number (0.3.0), bug fixes the last one (0.2.1). See `CHANGES.md`.
+
+## How things are identified
+
+| Data | Identified by | On changing the music folder |
+|---|---|---|
+| Library index (tracks, covers) | the selected folder | cleared and rebuilt |
+| Player queue | path **and** file link | stopped and cleared |
+| Saved "resume" queue | path, rebuilt from the index | only tracks found in the new folder are restored |
+| Playlists | path relative to the music folder | kept; tracks reappear when found again |
+| Audiobook progress | book path relative to the music folder | kept; same book path = same progress |
+
+## Tests
+
+`./gradlew test` runs the JVM unit tests for the library rules (album grouping, book detection, sorting).
 
 ## User playlists
 

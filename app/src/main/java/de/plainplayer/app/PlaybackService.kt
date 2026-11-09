@@ -199,6 +199,18 @@ class PlaybackService : MediaSessionService() {
             applySpeed(player)
         }
 
+        /**
+         * Leaving a book for something else (music, another book, a cleared queue): store the exact
+         * position it was left at. Otherwise the last save could be up to 5 s old.
+         */
+        override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+            if (reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION) return
+            val oldKey = oldPosition.mediaItem?.mediaId ?: return
+            val oldBook = audiobookKeyOf(oldKey) ?: return
+            val newBook = newPosition.mediaItem?.mediaId?.let { audiobookKeyOf(it) }
+            if (newBook != oldBook) bookProgress.save(oldBook, oldKey, oldPosition.positionMs, finished = false)
+        }
+
         override fun onPlaybackStateChanged(playbackState: Int) {
             if (playbackState == Player.STATE_ENDED && sleepAtEndOfTrack) setSleepTimer(0)
         }

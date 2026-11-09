@@ -4,3 +4,10 @@ build/
 local.properties
 .idea/
 *.iml
+# Signing keys and their passwords – never commit or share
+*.jks
+*.keystore
+keystore.properties
+# Build outputs
+*.apk
+*.aab

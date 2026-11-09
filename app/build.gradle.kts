@@ -4,10 +4,12 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-val appVersionName = "0.2.0"
-val appVersionCode = 2
+val appVersionName = "0.2.3"
+val appVersionCode = 9
 
-// APK file name: PlainPlayer-<version>-<buildType>.apk, e.g. PlainPlayer-1.1.0-debug.apk
+// Version name: MAJOR.MINOR.PATCH – feature → MINOR+1 (0.3.0), bug fix → PATCH+1 (0.2.1).
+// Version code: +1 for every build you install; never lower it, or Android refuses the update.
+// APK file name: PlainPlayer-<version>-<buildType>.apk, e.g. PlainPlayer-0.2.0-debug.apk
 base {
     archivesName.set("PlainPlayer-$appVersionName")
 }
@@ -50,5 +52,8 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.5.1")
     implementation("androidx.media3:media3-session:1.5.1")
     implementation("androidx.media3:media3-extractor:1.5.1")
+
+    // JVM unit tests for the library rules (run with ./gradlew test)
+    testImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

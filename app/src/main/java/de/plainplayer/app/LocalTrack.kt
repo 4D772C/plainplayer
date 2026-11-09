@@ -122,14 +122,41 @@ private fun normalizedFolderName(name: String): String =
  * "Audiobooks"/"Hörbücher" (any depth, e.g. "Hörbücher/Author/Title"); disc folders (CD1, CD2) belong
  * to their book. Files lying directly in the audiobook folder are books of their own.
  */
+/**
+ * Subfolders that split one book into parts: "CD1", "Disc 2", "Part 3", "Teil 4", "Tape 1",
+ * "Kassette 2", "Seite A1", or just a number ("01"). Not "Band 1" – in German that's a separate volume.
+ */
+private val BookPartFolder = Regex(
+    """^((cd|disc|disk|part|teil|tape|kassette|side|seite)[\s._-]*[a-z]?\d+([\s._-].*)?|\d{1,3})$""",
+    RegexOption.IGNORE_CASE,
+)
+
+/** "Hörbücher/Der Hobbit/Part 2" → "Hörbücher/Der Hobbit". */
+private fun bookFolder(folder: String): String {
+    val last = folder.substringAfterLast('/')
+    return if (BookPartFolder.matches(last)) folder.substringBeforeLast('/', "") else folder
+}
+
 fun audiobookKeyOf(trackKey: String): String? {
     val folder = trackKey.substringBeforeLast('/', "")
     if (folder.isEmpty()) return null
     val segments = folder.split('/')
     val root = segments.indexOfFirst { normalizedFolderName(it) in AudiobookFolderNames }
     if (root < 0) return null
-    val bookFolder = albumFolder(folder)
-    return if (bookFolder.count { it == '/' } <= root) trackKey else bookFolder
+    val book = bookFolder(folder)
+    return if (book.count { it == '/' } <= root) trackKey else book
+}
+
+/**
+ * The folder between the audiobook folder and the book, used as author when the tags don't name one:
+ * "Hörbücher/Tolkien/Der Hobbit" → "Tolkien". Null for "Hörbücher/Der Hobbit" and for single files.
+ */
+fun audiobookAuthorFolder(bookKey: String): String? {
+    val segments = bookKey.split('/')
+    val root = segments.indexOfFirst { normalizedFolderName(it) in AudiobookFolderNames }
+    if (root < 0) return null
+    val book = segments.lastIndex
+    return if (book - root >= 2) segments[book - 1] else null
 }
 
 data class Audiobook(

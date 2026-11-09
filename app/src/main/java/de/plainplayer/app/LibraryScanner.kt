@@ -169,7 +169,12 @@ class LibraryScanner(private val context: Context, private val coverStore: Cover
                 }
             }
             if (path == null) {
-                folderImages[albumTracks.first().folder]?.let { (_, imageId) ->
+                // Look next to the files first, then in the album folder above CD1/CD2 subfolders, then
+                // (audiobooks) in the book folder above "Part 1"/"Teil 1" subfolders.
+                val first = albumTracks.first()
+                val bookFolder = audiobookKeyOf(first.key)?.takeIf { it != first.key }
+                (folderImages[first.folder] ?: folderImages[albumFolder(first.folder)] ?: bookFolder?.let { folderImages[it] })
+                    ?.let { (_, imageId) ->
                     readLimited(DocumentsContract.buildDocumentUriUsingTree(tree, imageId))?.let { path = coverStore.save(albumKey, it) }
                 }
             }
