@@ -44,7 +44,7 @@ Tap the folder icon, choose the folder containing the music, and grant access. T
 
 ## Versioning
 
-Current version: **0.2.3**. New features raise the middle number (0.3.0), bug fixes the last one (0.2.1). See `CHANGES.md`.
+Current version: **0.2.4**. New features raise the middle number (0.3.0), bug fixes the last one (0.2.1). See `CHANGES.md`.
 
 ## How things are identified
 

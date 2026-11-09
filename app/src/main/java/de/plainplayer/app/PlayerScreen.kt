@@ -8,6 +8,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.PaddingValues
@@ -74,6 +75,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -262,6 +264,14 @@ private fun Header(vm: PlayerViewModel, onPickFolder: () -> Unit, onSleep: () ->
     val top = if (compact) 6.dp else 18.dp
     val bottom = if (vm.scanning) 6.dp else if (compact) 6.dp else 16.dp
     Row(Modifier.fillMaxWidth().padding(top = top, bottom = bottom), verticalAlignment = Alignment.CenterVertically) {
+        // Logo in the colour of the app name; as tall as the two text lines next to it.
+        Icon(
+            painter = painterResource(R.drawable.ic_plainplayer_logo),
+            contentDescription = null, // decorative: the name follows right after it
+            tint = Acid,
+            modifier = Modifier.height(28.dp).aspectRatio(13f / 12f),
+        )
+        Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             Text("PLAINPLAYER", color = Acid, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.5.sp)
             Text("LOCAL AUDIO", color = Muted, fontSize = 10.sp, letterSpacing = 1.8.sp)

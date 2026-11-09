@@ -9,6 +9,10 @@
 
 `versionCode` (in `app/build.gradle.kts`) is separate and must go up by 1 with every build you install, or Android refuses the update. It never goes down, even though the version name was reset to 0.2.0.
 
+## 0.2.4 – 2026-11-09
+
+- **Logo in the header:** the PlainPlayer figure (13 × 12 pixel grid, `res/drawable/ic_plainplayer_logo.xml`) in front of the app name, in the same lime colour, as tall as the two text lines. Vector, so it stays sharp on every screen.
+
 ## 0.2.3 – 2026-11-08
 
 Bug fix and usability release from a full review of 0.2.2.

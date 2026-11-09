@@ -4,8 +4,8 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-val appVersionName = "0.2.3"
-val appVersionCode = 9
+val appVersionName = "0.2.4"
+val appVersionCode = 10
 
 // Version name: MAJOR.MINOR.PATCH – feature → MINOR+1 (0.3.0), bug fix → PATCH+1 (0.2.1).
 // Version code: +1 for every build you install; never lower it, or Android refuses the update.

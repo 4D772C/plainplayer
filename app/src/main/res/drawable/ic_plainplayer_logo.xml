@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- PlainPlayer logo: 13 × 12 pixel figure. Single colour; tinted in code (same colour as the app name). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="26dp"
+    android:height="24dp"
+    android:viewportWidth="13"
+    android:viewportHeight="12">
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M5,0h3v3h-3z M6,3h1v1h-1z M5,4h3v4h-3z M0,6h13v1h-13z M1,5h1v3h-1z M11,5h1v3h-1z M5,8h1v4h-1z M7,8h1v4h-1z M4,11h1v1h-1z M8,11h1v1h-1z" />
+</vector>
