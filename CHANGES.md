@@ -9,9 +9,32 @@
 
 `versionCode` (in `app/build.gradle.kts`) is separate and must go up by 1 with every build you install, or Android refuses the update. It never goes down, even though the version name was reset to 0.2.0.
 
+## 0.2.5 – 2026-11-11
+
+Bug fix and usability release from a full review of 0.2.4.
+
+**Fixed**
+- **An unreachable storage could move your place in a book or queue.** When a file can't be played, the service skipped ahead up to five tracks, and each skip was saved as the new position. Opening the app without the SD card, or losing the card mid-book, could push a book several parts forward to 0:00. Now: nothing is skipped while paused (e.g. right after restoring the last session) and never for audiobooks; for music, if several files in a row fail, playback returns to where the failures started and stops.
+- **A failed tag read was cached for good.** If a file's tags couldn't be read once (storage busy, card not ready), it kept its file name as title and "Unknown artist" until the file changed. Such files are now retried on every scan. The "unreadable tags" note only appears after a manual refresh, not on every start.
+- **Playlist repair could swap in a different song.** After a folder change, a missing entry was matched by path ending; a bare file name like `01.mp3` could match another album's `01.mp3`. A match now needs folder + file name. Also much faster with many missing entries.
+- **Hidden files were indexed** as unplayable ghost tracks: macOS `._Song.mp3` companion files, Android's `.trashed-…` files, dot-folders. Names starting with a dot are skipped.
+- **Dead buttons after the playback service stopped or crashed.** The app now reconnects, also on the next tap.
+- **Grey flash at app start** (window background now matches the app).
+- "1 TRACKS · 1 ALBUMS" wording.
+
+**Usability**
+- **First scan shows the library as it grows** (after the first 250 files, then every 1,000) instead of an empty screen until the end. Tracks are playable right away.
+- **Undo** for removing a song from a playlist (it returns to its old place) and for **jumping to another part of a book** by tapping it in the part list ("You were at part 3, 41:20 – UNDO").
+- **Tap the now-playing panel** to open the album or book of the current track.
+- **Messages no longer queue up:** a new message replaces the one on screen.
+- **Tabs** are a little taller (easier to hit) and announced as tabs to screen readers.
+
+**Tests:** three new tests for the playlist path-matching rule (16 in total).
+
 ## 0.2.4 – 2026-11-09
 
-- **Logo in the header:** the PlainPlayer figure (13 × 12 pixel grid, `res/drawable/ic_plainplayer_logo.xml`) in front of the app name, in the same lime colour, as tall as the two text lines. Vector, so it stays sharp on every screen.
+- **App icon:** the PlainPlayer figure in lime on the app's dark background, as an adaptive icon (fits round, squircle and square launchers; figure stays inside the safe zone). Includes a monochrome layer for themed icons on Android 13+. Files: `res/mipmap-anydpi-v26/ic_launcher*.xml`, `res/drawable/ic_launcher_foreground.xml`, `res/values/ic_launcher_background.xml`.
+- **Logo in the header:** the PlainPlayer figure (13 × 12 pixel grid, `res/drawable/ic_plainplayer_logo.xml`) in front of the app name, in the same lime colour, no taller than the name's text size (follows the system font scale), centred on that line. Vector, so it stays sharp on every screen.
 
 ## 0.2.3 – 2026-11-08
 

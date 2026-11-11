@@ -58,7 +58,7 @@ private class Library(
             val documentId = runCatching { DocumentsContract.getDocumentId(Uri.parse(old)) }.getOrNull() ?: return null
             return byDocumentId[documentId]?.key
         }
-        return allTracks.filter { it.key.endsWith("/$old") || old.endsWith("/${it.key}") }.singleOrNull()?.key
+        return matchMovedKey(old, byKey.keys)
     }
 
     companion object {
@@ -174,6 +174,22 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
     fun resolve(trackKey: String): LocalTrack? = library.byKey[trackKey]
 
+    /** Shows the album or audiobook of the current track in the library (tap on "now playing"). */
+    fun openCurrent() {
+        val key = currentKey ?: return
+        val bookKey = audiobookKeyOf(key)
+        if (bookKey != null) {
+            if (books.any { it.key == bookKey }) {
+                libraryTab = LibraryTab.Books
+                openBook(bookKey)
+            }
+            return
+        }
+        val track = library.byKey[key] ?: return
+        libraryTab = LibraryTab.Albums
+        openAlbum(track.albumKey)
+    }
+
     // ---- Player state --------------------------------------------------------------------------
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
@@ -196,6 +212,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     var positionVersion by mutableIntStateOf(0)
         private set
     private var lastErrorMessageAt = 0L
+    private var lastReconnectAt = 0L
+    private var cleared = false
 
     // ---- Audiobooks / sleep timer ---------------------------------------------------------------
     private val bookStore = BookProgressStore(application)
@@ -227,7 +245,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             val now = SystemClock.elapsedRealtime()
             if (now - lastErrorMessageAt > ERROR_MESSAGE_INTERVAL_MS) {
                 val title = controller?.currentMediaItem?.mediaMetadata?.title ?: "this track"
-                post("Can't play “$title” (${error.errorCodeName}). Unplayable files are skipped.")
+                val hint = if (currentBookKey != null) "Is the storage with your books available?" else "Unplayable files are skipped."
+                post("Can't play “$title” (${error.errorCodeName}). $hint")
             }
             lastErrorMessageAt = now
         }
@@ -319,8 +338,15 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         val tree = selectedFolder ?: return
         if (scanJob?.isActive == true) return
         val job = viewModelScope.launch {
+            val scanScope = this
             scanning = true
             scanProgress = 0
+            // First scan of a folder: show what has been read so far instead of an empty library until
+            // the very end. The tracks are usable (playable) right away.
+            val showPartial = library.allTracks.isEmpty()
+            val partialTracks = ArrayList<LocalTrack>()
+            var batches = 0
+            var partialJob: Job? = null
             try {
                 // The database (not the in-memory library) also holds checkpoints of an interrupted scan.
                 val previous = if (full) LibrarySnapshot.EMPTY else withContext(Dispatchers.IO) { libraryCache.load() }
@@ -328,8 +354,21 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                     tree = Uri.parse(tree),
                     previous = previous,
                     onProgress = { n -> mainHandler.post { scanProgress = n } },
-                    checkpoint = { batch, covers -> libraryCache.upsert(batch, covers) },
+                    checkpoint = { batch, covers ->
+                        libraryCache.upsert(batch, covers)
+                        if (showPartial) {
+                            partialTracks.addAll(batch)
+                            batches++
+                            if (batches == 1 || batches % PARTIAL_EVERY_BATCHES == 0) {
+                                val soFar = LibrarySnapshot(ArrayList(partialTracks), covers)
+                                partialJob?.cancel()
+                                partialJob = scanScope.launch { applyLibrary(soFar) }
+                            }
+                        }
+                    },
                 )
+                // A partial update still in flight must not overwrite the final result.
+                partialJob?.cancelAndJoin()
                 when (result) {
                     is ScanResult.Failure -> post(result.message)
                     is ScanResult.Success -> {
@@ -340,7 +379,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                         val count = result.snapshot.tracks.size
                         val problems = buildList {
                             if (result.skippedFolders > 0) add("${result.skippedFolders} folder(s) could not be read")
-                            if (result.untaggedFiles > 0) add("${result.untaggedFiles} file(s) have unreadable tags")
+                            // Files with unreadable tags are retried on every scan; only mention them
+                            // when the user asked for the scan, not on every app start.
+                            if (result.untaggedFiles > 0 && !quiet) add("${result.untaggedFiles} file(s) have unreadable tags")
                             if (!saved) add("the library could not be cached")
                         }
                         when {
@@ -395,6 +436,23 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         val future = MediaController.Builder(app, token)
             .setListener(object : MediaController.Listener {
                 override fun onExtrasChanged(controller: MediaController, extras: Bundle) = readSleepState(extras)
+
+                /**
+                 * The playback service was stopped or crashed. Without reconnecting, every button would
+                 * silently do nothing until the app is restarted. Only for a controller that was really
+                 * connected (not for a failed connection attempt), and not in a tight loop.
+                 */
+                override fun onDisconnected(controller: MediaController) {
+                    if (cleared || this@PlayerViewModel.controller !== controller) return
+                    this@PlayerViewModel.controller = null
+                    isPlaying = false
+                    showPause = false
+                    val now = SystemClock.elapsedRealtime()
+                    if (now - lastReconnectAt > RECONNECT_MIN_INTERVAL_MS) {
+                        lastReconnectAt = now
+                        connectController()
+                    }
+                }
             })
             .buildAsync()
         controllerFuture = future
@@ -446,7 +504,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
     /** Plays [queue] from [startIndex]. The queue is only replaced when it actually differs. */
     private fun play(queue: List<LocalTrack>, startIndex: Int, startPositionMs: Long = 0L) {
-        val c = controller ?: run { post("Player is not ready yet."); return }
+        val c = controller ?: run { playerNotReady(); return }
         if (queue.isEmpty()) return
         val index = startIndex.coerceIn(0, queue.lastIndex)
         // Music gets back the shuffle/repeat it had before a book switched them off.
@@ -483,7 +541,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun togglePlayPause() {
-        val c = controller ?: return
+        val c = controller ?: run { playerNotReady(); return }
         when {
             showPause -> c.pause()
             c.mediaItemCount == 0 -> if (tracks.isNotEmpty()) play(tracks, 0)
@@ -527,7 +585,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
      * [startTrack]. A finished or new book starts at the beginning.
      */
     fun playBook(book: Audiobook, startTrack: LocalTrack? = null) {
-        val c = controller ?: run { post("Player is not ready yet."); return }
+        val c = controller ?: run { playerNotReady(); return }
         if (book.tracks.isEmpty()) return
         // Books are listened to in order.
         c.shuffleModeEnabled = false
@@ -548,7 +606,22 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             }
             else -> 0 to 0L
         }
+        // Where the listener was before tapping a part – a mis-tap in a long book must be reversible.
+        val before: Pair<Int, Long>? = if (startTrack == null) null else when {
+            currentBookKey == book.key ->
+                book.tracks.indexOfFirst { it.key == currentKey }.takeIf { it >= 0 }?.let { it to c.currentPosition }
+            progress != null && !progress.finished && progress.trackKey != null ->
+                book.tracks.indexOfFirst { it.key == progress.trackKey }.takeIf { it >= 0 }?.let { it to progress.positionMs }
+            else -> null
+        }
         play(book.tracks, index, position)
+        if (before != null && (before.first != index || before.second > UNDO_JUMP_MIN_MS)) {
+            _messages.trySend(
+                UiMessage("Jumped to part ${index + 1}. You were at part ${before.first + 1}, ${formatTime(before.second)}.", "UNDO") {
+                    play(book.tracks, before.first, before.second)
+                }
+            )
+        }
     }
 
     /** Jumps by [deltaMs] (e.g. ±30 s), continuing into the previous/next part when needed. */
@@ -630,7 +703,16 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         success = "Added ${trackCount(trackKeys.size)} to “${playlist.name}”."
     ) { playlistStore.add(playlist.id, trackKeys) }
 
-    fun removeEntry(entry: PlaylistEntry) = dbAction { playlistStore.removeEntry(entry.id) }
+    fun removeEntry(entry: PlaylistEntry) {
+        viewModelScope.launch {
+            val removed = withContext(Dispatchers.IO) { runCatching { playlistStore.removeEntry(entry.id) }.getOrNull() }
+            reloadPlaylists()
+            if (removed != null) {
+                val name = library.byKey[removed.trackKey]?.title ?: removed.trackKey.substringAfterLast('/')
+                _messages.trySend(UiMessage("Removed “$name”.", "UNDO") { dbAction { playlistStore.restoreEntry(removed) } })
+            }
+        }
+    }
 
     fun deletePlaylist(playlist: UserPlaylist) {
         if (selectedPlaylistId == playlist.id) selectedPlaylistId = null
@@ -659,11 +741,21 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    /** No connection to the playback service (yet, or any more): say so and try to connect again. */
+    private fun playerNotReady() {
+        post("Player is not ready yet. Please try again in a moment.")
+        if (controllerFuture?.isDone != false) {
+            lastReconnectAt = SystemClock.elapsedRealtime()
+            connectController()
+        }
+    }
+
     private fun post(text: String) {
         _messages.trySend(UiMessage(text))
     }
 
     override fun onCleared() {
+        cleared = true
         bookStore.removeListener(bookPrefsListener)
         controller?.removeListener(playerListener)
         controllerFuture?.let { MediaController.releaseFuture(it) }
@@ -676,8 +768,13 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         const val KEY_TREE = "music_tree"
         /** When continuing a book, start a little earlier to pick up the thread. */
         const val RESUME_REWIND_MS = 5_000L
+        /** Tapping the part you are in restarts it; offer a way back if you were further in than this. */
+        const val UNDO_JUMP_MIN_MS = 10_000L
         const val KEY_MUSIC_SHUFFLE = "music_shuffle"
         const val KEY_MUSIC_REPEAT = "music_repeat"
         const val ERROR_MESSAGE_INTERVAL_MS = 10_000L
+        /** During a first scan the visible library is refreshed every this many checkpoints (250 files each). */
+        const val PARTIAL_EVERY_BATCHES = 4
+        const val RECONNECT_MIN_INTERVAL_MS = 5_000L
     }
 }

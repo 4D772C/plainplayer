@@ -101,6 +101,30 @@ data class MusicAlbum(
     val multiDisc: Boolean,
 )
 
+/**
+ * Finds the current key of a track that a playlist still knows under an older path, after the music
+ * folder was chosen one level higher or lower: "Album/01.mp3" ⇄ "Music/Album/01.mp3".
+ *
+ * The shared part must contain at least a folder and a file name. A bare file name such as "01.mp3"
+ * exists in many albums and would silently swap in a different song. Returns null unless exactly one
+ * track matches.
+ */
+fun matchMovedKey(old: String, currentKeys: Collection<String>): String? {
+    val oldHasFolder = old.contains('/')
+    val oldAsSuffix = "/$old"
+    var match: String? = null
+    for (key in currentKeys) {
+        val keyEndsWithOld = oldHasFolder && key.endsWith(oldAsSuffix)
+        val oldEndsWithKey = key.contains('/') && old.length > key.length &&
+            old[old.length - key.length - 1] == '/' && old.endsWith(key)
+        if (keyEndsWithOld || oldEndsWithKey) {
+            if (match != null) return null // ambiguous
+            match = key
+        }
+    }
+    return match
+}
+
 fun trackCount(n: Int): String = if (n == 1) "1 track" else "$n tracks"
 
 fun formatTime(ms: Long): String {
@@ -118,11 +142,6 @@ private fun normalizedFolderName(name: String): String =
     Normalizer.normalize(name.trim(), Normalizer.Form.NFC).lowercase(Locale.ROOT)
 
 /**
- * Book key for a track inside an audiobook folder, null for music. One book = one folder below
- * "Audiobooks"/"Hörbücher" (any depth, e.g. "Hörbücher/Author/Title"); disc folders (CD1, CD2) belong
- * to their book. Files lying directly in the audiobook folder are books of their own.
- */
-/**
  * Subfolders that split one book into parts: "CD1", "Disc 2", "Part 3", "Teil 4", "Tape 1",
  * "Kassette 2", "Seite A1", or just a number ("01"). Not "Band 1" – in German that's a separate volume.
  */
@@ -137,6 +156,11 @@ private fun bookFolder(folder: String): String {
     return if (BookPartFolder.matches(last)) folder.substringBeforeLast('/', "") else folder
 }
 
+/**
+ * Book key for a track inside an audiobook folder, null for music. One book = one folder below
+ * "Audiobooks"/"Hörbücher" (any depth, e.g. "Hörbücher/Author/Title"); part folders (CD1, Part 2 …)
+ * belong to their book. Files lying directly in the audiobook folder are books of their own.
+ */
 fun audiobookKeyOf(trackKey: String): String? {
     val folder = trackKey.substringBeforeLast('/', "")
     if (folder.isEmpty()) return null

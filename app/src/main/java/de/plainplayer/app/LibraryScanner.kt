@@ -65,6 +65,9 @@ class LibraryScanner(private val context: Context, private val coverStore: Cover
             val listed = try {
                 listChildren(tree, dirId) { id, name, mime, lastModified, size ->
                     when {
+                        // Hidden entries are never music: macOS "._Song.mp3" companion files, Android's
+                        // ".trashed-…" files, ".thumbnails" folders. They would show up as unplayable tracks.
+                        name.startsWith(".") -> {}
                         mime == DocumentsContract.Document.MIME_TYPE_DIR -> pending.add(id to "$prefix$name/")
                         isAudio(name, mime) -> {
                             var key = prefix + name
@@ -260,11 +263,16 @@ class LibraryScanner(private val context: Context, private val coverStore: Cover
         }
     }
 
+    /**
+     * Placeholder for a file whose tags could not be read. Size and date are stored as 0 on purpose:
+     * the file then never counts as "unchanged", so the next scan tries again. Otherwise a one-off
+     * failure (storage busy, card not ready) would be cached for good.
+     */
     private fun fallbackTrack(file: Listed, uri: Uri) = LocalTrack(
         key = file.key, documentId = file.documentId, uri = uri,
         title = file.name.substringBeforeLast('.'), artist = UNKNOWN_ARTIST, albumArtist = UNKNOWN_ARTIST,
         album = folderName(file.key), durationMs = 0L, trackNumber = 0, discNumber = 0,
-        lastModified = file.lastModified, size = file.size,
+        lastModified = 0L, size = 0L,
     )
 
     private fun readEmbeddedPicture(uri: Uri): ByteArray? {

@@ -280,15 +280,35 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    /** A missing or corrupt file must not stop the whole queue. Gives up after a few failures in a row. */
+    /**
+     * A missing or corrupt music file must not stop the whole queue: it is skipped.
+     *
+     * But skipping moves the saved position, so it is deliberately limited:
+     * - not while paused (e.g. right after the last session was restored and the storage is not there yet),
+     * - never for audiobooks (skipping parts would overwrite the place you stopped at),
+     * - and if several files in a row fail (storage removed?), playback returns to where the
+     *   failures started and stops there.
+     */
     private class SkipUnplayableTracks(private val player: Player) : Player.Listener {
         private var failuresInARow = 0
+        private var startIndex = C.INDEX_UNSET
+        private var startPositionMs = 0L
 
         override fun onPlayerError(error: PlaybackException) {
+            val isBook = player.currentMediaItem?.mediaId?.let { audiobookKeyOf(it) } != null
+            if (!player.playWhenReady || isBook) return
+            if (failuresInARow == 0) {
+                startIndex = player.currentMediaItemIndex
+                startPositionMs = player.currentPosition
+            }
             if (failuresInARow < MAX_SKIPS && player.hasNextMediaItem()) {
                 failuresInARow++
                 player.seekToNextMediaItem()
                 player.prepare()
+            } else if (failuresInARow > 0) {
+                failuresInARow = 0
+                player.pause()
+                if (startIndex in 0 until player.mediaItemCount) player.seekTo(startIndex, startPositionMs)
             }
         }
 

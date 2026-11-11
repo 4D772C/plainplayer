@@ -10,6 +10,9 @@ class PlaylistNameTakenException(name: String) : Exception("A playlist called \"
 /** One row of a playlist. [trackKey] is the track's path relative to the music folder (see [LocalTrack.key]). */
 data class PlaylistEntry(val id: Long, val trackKey: String)
 
+/** A removed playlist entry with its old place in the list. */
+data class RemovedEntry(val playlistId: Long, val trackKey: String, val position: Long)
+
 data class UserPlaylist(val id: Long, val name: String, val entries: List<PlaylistEntry>)
 
 /**
@@ -111,8 +114,41 @@ class PlaylistStore(context: Context) : SQLiteOpenHelper(context, "plainplayer_p
         }
     }
 
-    fun removeEntry(entryId: Long) {
-        writableDatabase.delete("playlist_entries", "id = ?", arrayOf(entryId.toString()))
+    /** Removes one entry and returns what was removed, so it can be put back (undo). */
+    fun removeEntry(entryId: Long): RemovedEntry? {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val removed = db.rawQuery(
+                "SELECT playlist_id, track_key, position FROM playlist_entries WHERE id = ?",
+                arrayOf(entryId.toString())
+            ).use { c -> if (c.moveToFirst()) RemovedEntry(c.getLong(0), c.getString(1), c.getLong(2)) else null }
+            db.delete("playlist_entries", "id = ?", arrayOf(entryId.toString()))
+            db.setTransactionSuccessful()
+            return removed
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    /** Puts a removed entry back at its old place; later entries move down by one. */
+    fun restoreEntry(entry: RemovedEntry) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.execSQL(
+                "UPDATE playlist_entries SET position = position + 1 WHERE playlist_id = ? AND position >= ?",
+                arrayOf<Any>(entry.playlistId, entry.position)
+            )
+            db.insertOrThrow("playlist_entries", null, ContentValues().apply {
+                put("playlist_id", entry.playlistId)
+                put("track_key", entry.trackKey)
+                put("position", entry.position)
+            })
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
     fun delete(playlistId: Long) {

@@ -94,6 +94,29 @@ class LibraryRulesTest {
         assertNull(audiobookAuthorFolder("Musik/Hörbücher/Der Hobbit"))
     }
 
+    // ---- Playlists after the music folder moved ---------------------------------------------------
+
+    @Test
+    fun movedFolderIsRecognised() {
+        // Folder chosen one level higher …
+        assertEquals("Music/Album/01.mp3", matchMovedKey("Album/01.mp3", listOf("Music/Album/01.mp3", "Music/Other/01.mp3")))
+        // … or one level lower.
+        assertEquals("Album/01.mp3", matchMovedKey("Music/Album/01.mp3", listOf("Album/01.mp3", "Other/01.mp3")))
+    }
+
+    @Test
+    fun bareFileNameIsNotEnoughToMatch() {
+        // "01.mp3" exists in many albums: never swap in a different song.
+        assertNull(matchMovedKey("01.mp3", listOf("Album/01.mp3")))
+        assertNull(matchMovedKey("Artist/Album/01.mp3", listOf("01.mp3")))
+    }
+
+    @Test
+    fun ambiguousOrPartialMatchesAreRejected() {
+        assertNull(matchMovedKey("Album/01.mp3", listOf("A/Album/01.mp3", "B/Album/01.mp3")))
+        assertNull(matchMovedKey("XAlbum/01.mp3", listOf("Album/01.mp3"))) // not on a folder boundary
+    }
+
     // ---- Ordering --------------------------------------------------------------------------------
 
     @Test

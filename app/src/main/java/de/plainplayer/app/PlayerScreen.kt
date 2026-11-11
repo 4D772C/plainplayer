@@ -25,6 +25,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -75,7 +76,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -86,6 +89,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.common.Player
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
@@ -98,7 +102,9 @@ internal val Acid = Color(0xFFD7FF64)
 fun PlayerScreen(vm: PlayerViewModel, onPickFolder: () -> Unit) {
     val snackbarHost = remember { SnackbarHostState() }
     LaunchedEffect(vm) {
-        vm.messages.collect { msg ->
+        // collectLatest: a new message replaces the one on screen instead of queueing behind it
+        // (ten quick actions used to mean ten snackbars, one after the other).
+        vm.messages.collectLatest { msg ->
             val result = snackbarHost.showSnackbar(
                 message = msg.text,
                 actionLabel = msg.actionLabel,
@@ -189,7 +195,7 @@ fun PlayerScreen(vm: PlayerViewModel, onPickFolder: () -> Unit) {
 @Composable
 private fun PlayerSection(vm: PlayerViewModel, onPickFolder: () -> Unit, onSleep: () -> Unit, compact: Boolean) {
     Header(vm, onPickFolder, onSleep, compact)
-    NowPlayingPanel(vm.nowPlaying, compact)
+    NowPlayingPanel(vm.nowPlaying, compact, onOpen = { vm.openCurrent() })
     Spacer(Modifier.height(if (compact) 6.dp else 10.dp))
     PositionBar(vm)
     Controls(vm)
@@ -226,7 +232,11 @@ private fun ColumnScope.LibrarySection(
             }
             else -> {
                 Text("LIBRARY", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.8.sp, modifier = Modifier.weight(1f))
-                Text("${vm.tracks.size} TRACKS · ${vm.albums.size} ALBUMS", color = Muted, fontSize = 9.sp)
+                val albumCount = vm.albums.size
+                Text(
+                    "${trackCount(vm.tracks.size).uppercase(Locale.ROOT)} · $albumCount ${if (albumCount == 1) "ALBUM" else "ALBUMS"}",
+                    color = Muted, fontSize = 9.sp
+                )
             }
         }
     }
@@ -243,7 +253,9 @@ private fun ColumnScope.LibrarySection(
                     val chosen = vm.libraryTab == tab
                     Text(
                         tab.label.uppercase(Locale.ROOT), color = if (chosen) Ink else Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp,
-                        modifier = Modifier.clip(RoundedCornerShape(20.dp)).background(if (chosen) Acid else Panel).clickable { vm.libraryTab = tab }.padding(horizontal = 15.dp, vertical = 8.dp)
+                        modifier = Modifier.clip(RoundedCornerShape(20.dp)).background(if (chosen) Acid else Panel)
+                            .selectable(selected = chosen, role = Role.Tab, onClick = { vm.libraryTab = tab })
+                            .padding(horizontal = 16.dp, vertical = 11.dp)
                     )
                 }
             }
@@ -264,16 +276,20 @@ private fun Header(vm: PlayerViewModel, onPickFolder: () -> Unit, onSleep: () ->
     val top = if (compact) 6.dp else 18.dp
     val bottom = if (vm.scanning) 6.dp else if (compact) 6.dp else 16.dp
     Row(Modifier.fillMaxWidth().padding(top = top, bottom = bottom), verticalAlignment = Alignment.CenterVertically) {
-        // Logo in the colour of the app name; as tall as the two text lines next to it.
-        Icon(
-            painter = painterResource(R.drawable.ic_plainplayer_logo),
-            contentDescription = null, // decorative: the name follows right after it
-            tint = Acid,
-            modifier = Modifier.height(28.dp).aspectRatio(13f / 12f),
-        )
-        Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
-            Text("PLAINPLAYER", color = Acid, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.5.sp)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Logo in the colour of the app name, no taller than the name's text size (12 sp, so it
+                // also follows the system font scale), centred on that line.
+                val logoHeight = with(LocalDensity.current) { 12.sp.toDp() }
+                Icon(
+                    painter = painterResource(R.drawable.ic_plainplayer_logo),
+                    contentDescription = null, // decorative: the name follows right after it
+                    tint = Acid,
+                    modifier = Modifier.height(logoHeight).aspectRatio(13f / 12f),
+                )
+                Spacer(Modifier.width(7.dp))
+                Text("PLAINPLAYER", color = Acid, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.5.sp)
+            }
             Text("LOCAL AUDIO", color = Muted, fontSize = 10.sp, letterSpacing = 1.8.sp)
         }
         IconButton(onClick = { if (vm.selectedFolder == null) onPickFolder() else vm.refresh() }, enabled = !vm.scanning) {
@@ -302,9 +318,11 @@ private fun Header(vm: PlayerViewModel, onPickFolder: () -> Unit, onSleep: () ->
 }
 
 @Composable
-private fun NowPlayingPanel(np: NowPlaying?, compact: Boolean) {
+private fun NowPlayingPanel(np: NowPlaying?, compact: Boolean, onOpen: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().height(if (compact) 96.dp else 190.dp).clip(RoundedCornerShape(16.dp)).background(Panel).padding(if (compact) 10.dp else 15.dp),
+        Modifier.fillMaxWidth().height(if (compact) 96.dp else 190.dp).clip(RoundedCornerShape(16.dp)).background(Panel)
+            .clickable(enabled = np != null, onClickLabel = "Show album", onClick = onOpen)
+            .padding(if (compact) 10.dp else 15.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Artwork(np?.coverPath, Modifier.size(if (compact) 76.dp else 145.dp), large = true)

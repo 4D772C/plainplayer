@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launcher icon foreground: the PlainPlayer figure (13 × 12 grid) scaled ×4 and centred in the
+     108 × 108 dp adaptive-icon canvas. Every point stays inside the 66 dp safe circle, so no launcher
+     mask (circle, squircle, square) cuts it. Also used as the monochrome layer for themed icons. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:translateX="28"
+        android:translateY="30"
+        android:scaleX="4"
+        android:scaleY="4">
+        <path
+            android:fillColor="#FFD7FF64"
+            android:pathData="M5,0h3v3h-3z M6,3h1v1h-1z M5,4h3v4h-3z M0,6h13v1h-13z M1,5h1v3h-1z M11,5h1v3h-1z M5,8h1v4h-1z M7,8h1v4h-1z M4,11h1v1h-1z M8,11h1v1h-1z" />
+    </group>
+</vector>
