@@ -9,6 +9,14 @@
 
 `versionCode` (in `app/build.gradle.kts`) is separate and must go up by 1 with every build you install, or Android refuses the update. It never goes down, even though the version name was reset to 0.2.0.
 
+## 0.2.6 – 2026-11-11
+
+Build and release only, no app changes.
+
+- **Fixed "signature mismatch" when updating via Obtainium.** Releases were debug builds, signed with a throw-away key of whichever machine built them (GitHub Actions makes a new one every run). Release builds are now signed with one permanent release key, read from `keystore.properties` locally or from repository secrets on GitHub. See `RELEASING.md`.
+- **GitHub Actions workflow** (`.github/workflows/release.yml`): a pushed `v*` tag builds a signed release APK and attaches it to a GitHub release. It refuses to publish without the key.
+- Switching to the release key needs **one uninstall** on the phone (playlists and book progress are lost once).
+
 ## 0.2.5 – 2026-11-11
 
 Bug fix and usability release from a full review of 0.2.4.

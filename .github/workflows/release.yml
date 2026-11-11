@@ -1,0 +1,64 @@
+# Builds a signed release APK whenever a version tag is pushed (e.g. `git tag v0.2.5 && git push --tags`)
+# and attaches it to a GitHub release. Obtainium picks it up from there.
+#
+# Needs four repository secrets (Settings → Secrets and variables → Actions):
+#   PLAINPLAYER_KEYSTORE_BASE64    the keystore file, base64-encoded
+#   PLAINPLAYER_KEYSTORE_PASSWORD
+#   PLAINPLAYER_KEY_ALIAS
+#   PLAINPLAYER_KEY_PASSWORD
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Restore signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.PLAINPLAYER_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::Secret PLAINPLAYER_KEYSTORE_BASE64 is missing – refusing to publish an APK with a random key."
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          echo "PLAINPLAYER_KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+
+      - name: Build signed release APK
+        env:
+          PLAINPLAYER_KEYSTORE_PASSWORD: ${{ secrets.PLAINPLAYER_KEYSTORE_PASSWORD }}
+          PLAINPLAYER_KEY_ALIAS: ${{ secrets.PLAINPLAYER_KEY_ALIAS }}
+          PLAINPLAYER_KEY_PASSWORD: ${{ secrets.PLAINPLAYER_KEY_PASSWORD }}
+        run: gradle --no-daemon assembleRelease
+
+      - name: Check that the APK is signed
+        run: |
+          APK=$(ls app/build/outputs/apk/release/*.apk)
+          case "$APK" in *unsigned*) echo "::error::APK is unsigned"; exit 1;; esac
+          echo "APK=$APK" >> "$GITHUB_ENV"
+
+      - name: Remove signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.APK }}
+          generate_release_notes: true

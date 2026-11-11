@@ -1,11 +1,13 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-val appVersionName = "0.2.5"
-val appVersionCode = 11
+val appVersionName = "0.2.6"
+val appVersionCode = 12
 
 // Version name: MAJOR.MINOR.PATCH – feature → MINOR+1 (0.3.0), bug fix → PATCH+1 (0.2.1).
 // Version code: +1 for every build you install; never lower it, or Android refuses the update.
@@ -13,6 +15,18 @@ val appVersionCode = 11
 base {
     archivesName.set("PlainPlayer-$appVersionName")
 }
+
+// Release signing. Android installs an update only if it is signed with the same key as the installed
+// app, so every release must use ONE permanent key. The key is never part of the repository:
+// - on your PC it is read from `keystore.properties` in the project root (ignored by git),
+// - on GitHub Actions from repository secrets (environment variables).
+// Without either, `assembleRelease` still works but produces an unsigned APK.
+val keystoreProperties = Properties().apply {
+    val file = rootProject.file("keystore.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+fun signingValue(property: String, environment: String): String? =
+    keystoreProperties.getProperty(property) ?: System.getenv(environment)
 
 android {
     namespace = "de.plainplayer.app"
@@ -24,6 +38,26 @@ android {
         targetSdk = 35
         versionCode = appVersionCode
         versionName = appVersionName
+    }
+
+    signingConfigs {
+        create("release") {
+            val store = signingValue("storeFile", "PLAINPLAYER_KEYSTORE_FILE")
+            if (store != null) {
+                storeFile = rootProject.file(store)
+                storePassword = signingValue("storePassword", "PLAINPLAYER_KEYSTORE_PASSWORD")
+                keyAlias = signingValue("keyAlias", "PLAINPLAYER_KEY_ALIAS")
+                keyPassword = signingValue("keyPassword", "PLAINPLAYER_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            val release = signingConfigs.getByName("release")
+            signingConfig = if (release.storeFile != null) release else null
+        }
     }
 
     buildFeatures { compose = true }
